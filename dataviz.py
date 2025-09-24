@@ -254,7 +254,7 @@ class FraudDataVisualizer:
         axes[0].set_xticks(range(len(valid_labels)))
         axes[0].set_xticklabels(valid_labels, rotation=45)
         
-        # Daily transaction count per customer
+        # Daily transaction count per customer - FIXED
         daily_tx_count = self.train_tx.groupby(['CUSTOMER_ID', self.train_tx['TX_TS'].dt.date]).size()
         customer_daily_patterns = daily_tx_count.groupby('CUSTOMER_ID').agg(['mean', 'max', 'std']).fillna(0)
         customer_daily_patterns.columns = ['avg_daily_tx', 'max_daily_tx', 'std_daily_tx']
@@ -264,12 +264,20 @@ class FraudDataVisualizer:
         customer_patterns = customer_daily_patterns.join(customer_fraud_rate)
         customer_patterns = customer_patterns.dropna()
         
-        # High activity customers
-        high_activity = customer_patterns[customer_patterns['max_daily_tx'] > 10]
-        axes[1].scatter(high_activity['max_daily_tx'], high_activity['TX_FRAUD'], alpha=0.6)
-        axes[1].set_xlabel('Max Daily Transactions')
-        axes[1].set_ylabel('Customer Fraud Rate')
-        axes[1].set_title('High Activity Customers: Volume vs Fraud Rate')
+        # FIXED: Lower threshold and add debugging
+        high_activity = customer_patterns[customer_patterns['max_daily_tx'] > 3]
+        print(f"High activity customers (>3 daily): {len(high_activity)}")
+        print(f"Max daily transactions range: {customer_patterns['max_daily_tx'].min():.1f} to {customer_patterns['max_daily_tx'].max():.1f}")
+        
+        if len(high_activity) > 10:  # Only plot if we have enough data
+            axes[1].scatter(high_activity['max_daily_tx'], high_activity['TX_FRAUD'], alpha=0.6)
+            axes[1].set_xlabel('Max Daily Transactions')
+            axes[1].set_ylabel('Customer Fraud Rate')
+            axes[1].set_title(f'High Activity Customers: Volume vs Fraud Rate\n({len(high_activity)} customers)')
+        else:
+            axes[1].text(0.5, 0.5, f'Insufficient high activity customers\n(only {len(high_activity)} found)', 
+                        ha='center', va='center', transform=axes[1].transAxes)
+            axes[1].set_title('High Activity Customers: Volume vs Fraud Rate')
         
         # Time distribution analysis
         fraud_time_diff = tx_sorted[tx_sorted['TX_FRAUD'] == 1]['time_diff_minutes']
@@ -368,7 +376,7 @@ class FraudDataVisualizer:
         
         return mcc_fraud.head(20), business_fraud
     
-    def business_impact_analysis(self):
+    def business_impact_analysis(self, model_file=None):
         fig, axes = self.create_figure(figsize=(16, 10))
         
         # Financial impact
@@ -417,28 +425,41 @@ class FraudDataVisualizer:
         axes[2].pie(risk_counts, labels=risk_categories, colors=colors, autopct='%1.1f%%')
         axes[2].set_title('Customer Risk Distribution\n(Among customers with 5+ transactions)')
         
-        # Prevention impact simulation
-        detection_rates = [0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99]
-        false_positive_rates = [0.01, 0.02, 0.05, 0.10, 0.15, 0.25, 0.40]
-        
-        prevented_losses = [total_fraud_amount * dr for dr in detection_rates]
-        blocked_legitimate = [self.train_tx[self.train_tx['TX_FRAUD'] == 0]['TX_AMOUNT'].sum() * fpr 
-                             for fpr in false_positive_rates]
-        
-        ax3_twin = axes[3].twinx()
-        line1 = axes[3].plot(detection_rates, [pl/1000 for pl in prevented_losses], 
-                           'g-', linewidth=2, label='Prevented Losses')
-        line2 = ax3_twin.plot(detection_rates, [bl/1000 for bl in blocked_legitimate], 
-                             'r--', linewidth=2, label='Blocked Legitimate')
-        
-        axes[3].set_xlabel('Detection Rate')
-        axes[3].set_ylabel('Prevented Losses (K$)', color='g')
-        ax3_twin.set_ylabel('Blocked Legitimate (K$)', color='r')
-        axes[3].set_title('Fraud Prevention Impact Simulation')
-        
-        lines = line1 + line2
-        labels = [l.get_label() for l in lines]
-        axes[3].legend(lines, labels, loc='center right')
+        # Replace the fake precision-recall simulation with real data analysis
+        if model_file:
+            # If we have a model, show something more meaningful
+            axes[3].text(0.5, 0.5, 'Model-based analysis available\n(Feature importance shown separately)', 
+                        ha='center', va='center', transform=axes[3].transAxes,
+                        bbox=dict(boxstyle="round,pad=0.3", facecolor="lightblue"))
+            axes[3].set_title('Model Analysis Available')
+        else:
+            # Show fraud concentration by amount ranges
+            amount_ranges = pd.cut(self.train_tx['TX_AMOUNT'], 
+                                 bins=[0, 50, 100, 200, 500, np.inf], 
+                                 labels=['$0-50', '$50-100', '$100-200', '$200-500', '$500+'])
+            
+            range_analysis = self.train_tx.groupby(amount_ranges).agg({
+                'TX_FRAUD': ['count', 'sum'],
+                'TX_AMOUNT': 'sum'
+            })
+            range_analysis.columns = ['total_tx', 'fraud_tx', 'total_amount']
+            range_analysis['fraud_concentration'] = range_analysis['fraud_tx'] / range_analysis['fraud_tx'].sum()
+            range_analysis['volume_concentration'] = range_analysis['total_amount'] / range_analysis['total_amount'].sum()
+            
+            x = np.arange(len(range_analysis))
+            width = 0.35
+            
+            axes[3].bar(x - width/2, range_analysis['fraud_concentration'], width, 
+                       label='Fraud Concentration', color='red', alpha=0.7)
+            axes[3].bar(x + width/2, range_analysis['volume_concentration'], width, 
+                       label='Volume Concentration', color='blue', alpha=0.7)
+            
+            axes[3].set_xlabel('Amount Range')
+            axes[3].set_ylabel('Concentration')
+            axes[3].set_title('Fraud vs Volume Distribution by Amount Range')
+            axes[3].set_xticks(x)
+            axes[3].set_xticklabels(range_analysis.index)
+            axes[3].legend()
         
         plt.tight_layout()
         plt.savefig('fraud_business_impact.png', dpi=300, bbox_inches='tight')
@@ -455,6 +476,359 @@ class FraudDataVisualizer:
         
         return total_fraud_amount, merchant_losses
     
+    def network_analysis(self):
+        """NEW: Customer-Terminal interaction heatmap"""
+        fig, axes = self.create_figure(figsize=(16, 10))
+        
+        # Customer-Terminal interaction matrix
+        cust_term_matrix = self.train_tx.groupby(['CUSTOMER_ID', 'TERMINAL_ID']).agg({
+            'TX_FRAUD': ['count', 'sum', 'mean'],
+            'TX_AMOUNT': 'sum'
+        })
+        cust_term_matrix.columns = ['tx_count', 'fraud_count', 'fraud_rate', 'total_amount']
+        cust_term_matrix = cust_term_matrix[cust_term_matrix['tx_count'] >= 3]  # At least 3 transactions
+        
+        # Top customer-terminal pairs by transaction volume
+        top_pairs = cust_term_matrix.nlargest(50, 'tx_count')
+        
+        # Create network visualization data
+        pair_data = []
+        for (cust, term), row in top_pairs.iterrows():
+            pair_data.append({
+                'customer': f"C_{str(cust)[:6]}", 
+                'terminal': f"T_{str(term)[:6]}",
+                'transactions': row['tx_count'],
+                'fraud_rate': row['fraud_rate']
+            })
+        
+        pair_df = pd.DataFrame(pair_data)
+        
+        # Plot 1: Customer-Terminal interaction bubble chart
+        scatter = axes[0].scatter(pair_df.index, pair_df['transactions'], 
+                                 c=pair_df['fraud_rate'], s=pair_df['transactions']*3,
+                                 alpha=0.7, cmap='Reds')
+        axes[0].set_xlabel('Customer-Terminal Pair Index')
+        axes[0].set_ylabel('Transaction Count')
+        axes[0].set_title('Top 50 Customer-Terminal Pairs\n(Size=Volume, Color=Fraud Rate)')
+        plt.colorbar(scatter, ax=axes[0])
+        
+        # Plot 2: Customer diversification (number of terminals used)
+        cust_terminals = self.train_tx.groupby('CUSTOMER_ID')['TERMINAL_ID'].nunique()
+        cust_fraud_rate = self.train_tx.groupby('CUSTOMER_ID')['TX_FRAUD'].mean()
+        cust_diversity = pd.DataFrame({
+            'terminal_count': cust_terminals,
+            'fraud_rate': cust_fraud_rate
+        }).dropna()
+        
+        # Bin by terminal diversity
+        cust_diversity['diversity_bin'] = pd.cut(cust_diversity['terminal_count'], 
+                                               bins=[0, 1, 2, 3, 5, 100], 
+                                               labels=['1', '2', '3', '4-5', '6+'])
+        diversity_fraud = cust_diversity.groupby('diversity_bin')['fraud_rate'].mean()
+        
+        axes[1].bar(range(len(diversity_fraud)), diversity_fraud.values, color='skyblue', alpha=0.7)
+        axes[1].set_xticks(range(len(diversity_fraud)))
+        axes[1].set_xticklabels(diversity_fraud.index)
+        axes[1].set_xlabel('Number of Different Terminals Used')
+        axes[1].set_ylabel('Average Fraud Rate')
+        axes[1].set_title('Fraud Rate by Customer Terminal Diversity')
+        
+        # Plot 3: Terminal customer diversity
+        term_customers = self.train_tx.groupby('TERMINAL_ID')['CUSTOMER_ID'].nunique()
+        term_fraud_rate = self.train_tx.groupby('TERMINAL_ID')['TX_FRAUD'].mean()
+        term_diversity = pd.DataFrame({
+            'customer_count': term_customers,
+            'fraud_rate': term_fraud_rate
+        }).dropna()
+        
+        # Only terminals with significant activity
+        term_diversity_active = term_diversity[term_diversity['customer_count'] >= 10]
+        
+        axes[2].scatter(term_diversity_active['customer_count'], 
+                       term_diversity_active['fraud_rate'], alpha=0.6)
+        axes[2].set_xlabel('Number of Different Customers')
+        axes[2].set_ylabel('Terminal Fraud Rate')
+        axes[2].set_title('Terminal Customer Base vs Fraud Rate')
+        axes[2].grid(True, alpha=0.3)
+        
+        # Plot 4: Merchant risk distribution
+        merchant_stats = self.train_tx.groupby('MERCHANT_ID').agg({
+            'TX_FRAUD': ['count', 'sum', 'mean'],
+            'TX_AMOUNT': ['sum', 'mean']
+        })
+        merchant_stats.columns = ['tx_count', 'fraud_count', 'fraud_rate', 'total_amount', 'avg_amount']
+        merchant_stats = merchant_stats[merchant_stats['tx_count'] >= 50]  # Minimum transactions
+        
+        # Create risk categories
+        merchant_stats['risk_category'] = pd.cut(
+            merchant_stats['fraud_rate'],
+            bins=[0, 0.01, 0.05, 0.1, 1.0],
+            labels=['Very Low', 'Low', 'Medium', 'High']
+        )
+        
+        risk_dist = merchant_stats['risk_category'].value_counts()
+        colors = ['green', 'yellow', 'orange', 'red']
+        
+        axes[3].pie(risk_dist.values, labels=risk_dist.index, colors=colors[:len(risk_dist)], 
+                   autopct='%1.1f%%')
+        axes[3].set_title('Merchant Risk Distribution\n(Based on Fraud Rate)')
+        
+        plt.tight_layout()
+        plt.savefig('fraud_network_analysis.png', dpi=300, bbox_inches='tight')
+        plt.show()
+        
+        return pair_df, cust_diversity, term_diversity, merchant_stats
+    
+    def temporal_deep_dive(self):
+        """NEW: Advanced temporal pattern analysis"""
+        fig, axes = self.create_figure(figsize=(16, 10))
+        
+        # Calculate time between transactions for velocity analysis
+        tx_sorted = self.train_tx.sort_values(['CUSTOMER_ID', 'TX_TS'])
+        tx_sorted['prev_tx_time'] = tx_sorted.groupby('CUSTOMER_ID')['TX_TS'].shift(1)
+        tx_sorted['time_diff_seconds'] = (tx_sorted['TX_TS'] - tx_sorted['prev_tx_time']).dt.total_seconds()
+        tx_sorted = tx_sorted.dropna(subset=['time_diff_seconds'])
+        
+        # Plot 1: Transaction velocity heatmap by hour and day
+        tx_sorted['hour'] = tx_sorted['TX_TS'].dt.hour
+        tx_sorted['day_of_week'] = tx_sorted['TX_TS'].dt.dayofweek
+        
+        # Create velocity categories
+        tx_sorted['velocity_cat'] = pd.cut(
+            tx_sorted['time_diff_seconds'],
+            bins=[0, 300, 1800, 3600, 86400, np.inf],  # 5min, 30min, 1hr, 1day, inf
+            labels=['<5min', '5-30min', '30min-1hr', '1hr-1day', '>1day']
+        )
+        
+        # Quick transactions (< 30 min) fraud rate by hour and day
+        quick_tx = tx_sorted[tx_sorted['time_diff_seconds'] < 1800]  # < 30 minutes
+        if len(quick_tx) > 100:
+            quick_heatmap = quick_tx.pivot_table(
+                values='TX_FRAUD', 
+                index='day_of_week', 
+                columns='hour', 
+                aggfunc='mean'
+            )
+            
+            im = axes[0].imshow(quick_heatmap, cmap='Reds', aspect='auto')
+            axes[0].set_xlabel('Hour of Day')
+            axes[0].set_ylabel('Day of Week')
+            axes[0].set_title('Quick Transaction (<30min) Fraud Rate Heatmap')
+            axes[0].set_yticks(range(7))
+            axes[0].set_yticklabels(['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'])
+            plt.colorbar(im, ax=axes[0])
+        
+        # Plot 2: Customer transaction count vs fraud rate
+        customer_tx_count = self.train_tx.groupby('CUSTOMER_ID').agg({
+            'TX_FRAUD': ['count', 'sum', 'mean'],
+            'TX_AMOUNT': 'sum'
+        })
+        customer_tx_count.columns = ['tx_count', 'fraud_count', 'fraud_rate', 'total_amount']
+        customer_tx_count = customer_tx_count[customer_tx_count['tx_count'] >= 5]
+        
+        # Create bins for transaction count
+        customer_tx_count['count_bin'] = pd.cut(
+            customer_tx_count['tx_count'],
+            bins=[0, 10, 25, 50, 100, 1000],
+            labels=['5-10', '11-25', '26-50', '51-100', '100+']
+        )
+        
+        count_fraud = customer_tx_count.groupby('count_bin')['fraud_rate'].mean()
+        
+        axes[1].bar(range(len(count_fraud)), count_fraud.values, color='coral', alpha=0.7)
+        axes[1].set_xticks(range(len(count_fraud)))
+        axes[1].set_xticklabels(count_fraud.index)
+        axes[1].set_xlabel('Customer Transaction Count Range')
+        axes[1].set_ylabel('Average Fraud Rate')
+        axes[1].set_title('Fraud Rate by Customer Activity Level')
+        
+        # Plot 3: Terminal utilization patterns
+        terminal_hourly = self.train_tx.groupby(['TERMINAL_ID', 'hour']).agg({
+            'TX_FRAUD': ['count', 'mean']
+        })
+        terminal_hourly.columns = ['tx_count', 'fraud_rate']
+        terminal_hourly = terminal_hourly.reset_index()
+        
+        # Find terminals with unusual hour patterns (high fraud at certain hours)
+        terminal_hour_fraud = terminal_hourly.pivot_table(
+            values='fraud_rate',
+            index='TERMINAL_ID',
+            columns='hour',
+            aggfunc='mean'
+        ).fillna(0)
+        
+        # Calculate variance in fraud rate across hours for each terminal
+        terminal_hour_fraud['fraud_variance'] = terminal_hour_fraud.var(axis=1)
+        high_variance_terminals = terminal_hour_fraud.nlargest(20, 'fraud_variance')
+        
+        # Plot fraud rate patterns for top variable terminals
+        for i, (terminal_id, row) in enumerate(high_variance_terminals.head(5).iterrows()):
+            if i == 0:
+                axes[2].plot(range(24), row[:-1], label=f'T_{str(terminal_id)[:6]}', alpha=0.7)
+            else:
+                axes[2].plot(range(24), row[:-1], alpha=0.7)
+        
+        axes[2].set_xlabel('Hour of Day')
+        axes[2].set_ylabel('Fraud Rate')
+        axes[2].set_title('Top 5 Terminals with Variable Fraud Patterns by Hour')
+        axes[2].grid(True, alpha=0.3)
+        axes[2].legend()
+        
+        # Plot 4: Recurring transaction analysis
+        recurring_stats = self.train_tx.groupby('IS_RECURRING_TRANSACTION').agg({
+            'TX_FRAUD': ['count', 'mean'],
+            'TX_AMOUNT': 'mean'
+        })
+        recurring_stats.columns = ['tx_count', 'fraud_rate', 'avg_amount']
+        
+        # Also analyze by card brand
+        card_fraud = self.train_tx.groupby('CARD_BRAND').agg({
+            'TX_FRAUD': ['count', 'mean'],
+            'TX_AMOUNT': 'mean'
+        })
+        card_fraud.columns = ['tx_count', 'fraud_rate', 'avg_amount']
+        card_fraud = card_fraud[card_fraud['tx_count'] >= 1000].sort_values('fraud_rate', ascending=False)
+        
+        if len(card_fraud) > 0:
+            axes[3].bar(range(len(card_fraud)), card_fraud['fraud_rate'], color='lightgreen', alpha=0.7)
+            axes[3].set_xticks(range(len(card_fraud)))
+            axes[3].set_xticklabels(card_fraud.index, rotation=45)
+            axes[3].set_ylabel('Fraud Rate')
+            axes[3].set_title('Fraud Rate by Card Brand')
+        
+        plt.tight_layout()
+        plt.savefig('fraud_temporal_deep_dive.png', dpi=300, bbox_inches='tight')
+        plt.show()
+        
+        return tx_sorted, customer_tx_count, terminal_hourly, card_fraud
+    
+    def behavioral_analysis(self):
+        """NEW: Advanced behavioral pattern analysis"""
+        fig, axes = self.create_figure(figsize=(16, 10))
+        
+        # Plot 1: Amount anomaly patterns
+        # Calculate z-scores for amounts by customer
+        customer_amount_stats = self.train_tx.groupby('CUSTOMER_ID')['TX_AMOUNT'].agg(['mean', 'std'])
+        customer_amount_stats['std'] = customer_amount_stats['std'].fillna(0)
+        
+        # Merge back to get z-scores
+        tx_with_stats = self.train_tx.merge(
+            customer_amount_stats.reset_index(),
+            on='CUSTOMER_ID',
+            suffixes=('', '_cust')
+        )
+        
+        # Calculate amount z-score per customer
+        tx_with_stats['amount_zscore'] = np.where(
+            tx_with_stats['std'] > 0,
+            (tx_with_stats['TX_AMOUNT'] - tx_with_stats['mean']) / tx_with_stats['std'],
+            0
+        )
+        
+        # Fraud rate by amount z-score bins
+        tx_with_stats['zscore_bin'] = pd.cut(
+            tx_with_stats['amount_zscore'],
+            bins=[-np.inf, -2, -1, 0, 1, 2, np.inf],
+            labels=['<<-2', '-2 to -1', '-1 to 0', '0 to 1', '1 to 2', '>>2']
+        )
+        
+        zscore_fraud = tx_with_stats.groupby('zscore_bin')['TX_FRAUD'].agg(['count', 'mean'])
+        zscore_fraud = zscore_fraud[zscore_fraud['count'] >= 100]
+        
+        axes[0].bar(range(len(zscore_fraud)), zscore_fraud['mean'], color='purple', alpha=0.7)
+        axes[0].set_xticks(range(len(zscore_fraud)))
+        axes[0].set_xticklabels(zscore_fraud.index)
+        axes[0].set_xlabel('Amount Z-Score (vs Customer History)')
+        axes[0].set_ylabel('Fraud Rate')
+        axes[0].set_title('Fraud Rate by Amount Anomaly Level')
+        
+        # Plot 2: Payment method risk analysis
+        payment_methods = ['CARD_BRAND', 'TRANSACTION_TYPE', 'CARDHOLDER_AUTH_METHOD']
+        
+        for i, method in enumerate(payment_methods):
+            if method in self.train_tx.columns and i < 3:  # Only show first 3
+                method_fraud = self.train_tx.groupby(method).agg({
+                    'TX_FRAUD': ['count', 'mean']
+                })
+                method_fraud.columns = ['tx_count', 'fraud_rate']
+                method_fraud = method_fraud[method_fraud['tx_count'] >= 500].sort_values('fraud_rate', ascending=False)
+                
+                if len(method_fraud) > 0 and i == 1:  # Show TRANSACTION_TYPE
+                    axes[1].bar(range(len(method_fraud)), method_fraud['fraud_rate'], 
+                               color='orange', alpha=0.7)
+                    axes[1].set_xticks(range(len(method_fraud)))
+                    axes[1].set_xticklabels(method_fraud.index, rotation=45, ha='right')
+                    axes[1].set_ylabel('Fraud Rate')
+                    axes[1].set_title('Fraud Rate by Transaction Type')
+                    break
+        
+        # Plot 3: Geographic fraud hotspots
+        # Merge with customer locations
+        tx_with_locations = self.train_tx.merge(self.customers, on='CUSTOMER_ID', how='left')
+        
+        # Create grid cells for heatmap
+        tx_with_locations['x_grid'] = (tx_with_locations['x_customer_id'] / 10).astype(int) * 10
+        tx_with_locations['y_grid'] = (tx_with_locations['y_customer_id'] / 10).astype(int) * 10
+        
+        # Grid fraud rates
+        grid_fraud = tx_with_locations.groupby(['x_grid', 'y_grid']).agg({
+            'TX_FRAUD': ['count', 'mean']
+        })
+        grid_fraud.columns = ['tx_count', 'fraud_rate']
+        grid_fraud = grid_fraud[grid_fraud['tx_count'] >= 50]  # Minimum transactions per grid
+        
+        # Create heatmap data
+        if len(grid_fraud) > 0:
+            heatmap_data = grid_fraud['fraud_rate'].unstack(fill_value=0)
+            im = axes[2].imshow(heatmap_data, cmap='Reds', aspect='auto', origin='lower')
+            axes[2].set_xlabel('X Grid (0-100)')
+            axes[2].set_ylabel('Y Grid (0-100)')
+            axes[2].set_title('Geographic Fraud Rate Heatmap\n(10x10 grid cells)')
+            plt.colorbar(im, ax=axes[2])
+        
+        # Plot 4: Customer loyalty vs fraud
+        # Calculate customer tenure and transaction frequency
+        customer_patterns = self.train_tx.groupby('CUSTOMER_ID').agg({
+            'TX_TS': ['min', 'max', 'count'],
+            'TX_FRAUD': 'mean',
+            'TX_AMOUNT': 'mean'
+        })
+        customer_patterns.columns = ['first_tx', 'last_tx', 'tx_count', 'fraud_rate', 'avg_amount']
+        
+        # Calculate tenure in days
+        customer_patterns['tenure_days'] = (
+            customer_patterns['last_tx'] - customer_patterns['first_tx']
+        ).dt.days
+        customer_patterns['tenure_days'] = customer_patterns['tenure_days'].fillna(0)
+        
+        # Calculate transaction frequency (transactions per day)
+        customer_patterns['tx_frequency'] = customer_patterns['tx_count'] / (customer_patterns['tenure_days'] + 1)
+        
+        # Only customers with multiple transactions
+        active_customers = customer_patterns[customer_patterns['tx_count'] >= 5]
+        
+        # Create frequency bins
+        active_customers['freq_bin'] = pd.cut(
+            active_customers['tx_frequency'],
+            bins=[0, 0.1, 0.5, 1.0, 5.0, np.inf],
+            labels=['Very Low', 'Low', 'Medium', 'High', 'Very High']
+        )
+        
+        freq_fraud = active_customers.groupby('freq_bin')['fraud_rate'].mean()
+        
+        axes[3].bar(range(len(freq_fraud)), freq_fraud.values, color='teal', alpha=0.7)
+        axes[3].set_xticks(range(len(freq_fraud)))
+        axes[3].set_xticklabels(freq_fraud.index)
+        axes[3].set_xlabel('Transaction Frequency Category')
+        axes[3].set_ylabel('Average Fraud Rate')
+        axes[3].set_title('Fraud Rate by Customer Transaction Frequency')
+        
+        plt.tight_layout()
+        plt.savefig('fraud_behavioral_analysis.png', dpi=300, bbox_inches='tight')
+        plt.show()
+        
+        return tx_with_stats, grid_fraud, customer_patterns, active_customers
+    
     def feature_importance_analysis(self, model_file=None):
         if model_file:
             try:
@@ -462,25 +836,52 @@ class FraudDataVisualizer:
                 with open(model_file, 'rb') as f:
                     model_data = pickle.load(f)
                 
-                # Get feature importance from first model (assuming LightGBM)
-                model = model_data['models'][0]
+                # Get feature importance from models - FIXED for all model types
+                models = model_data['models']
                 feature_names = model_data['feature_cols']
+                model_type = model_data['model_type']
                 
-                if hasattr(model, 'feature_importance'):
-                    importance = model.feature_importance(importance_type='gain')
+                # Average importance across all folds
+                all_importances = []
+                
+                for model in models:
+                    if model_type == 'lightgbm':
+                        importance = model.feature_importance(importance_type='gain')
+                    elif model_type == 'xgboost':
+                        # XGBoost returns dict, need to align with feature names
+                        importance_dict = model.get_score(importance_type='gain')
+                        importance = [importance_dict.get(f'f{i}', 0) for i in range(len(feature_names))]
+                    elif model_type == 'catboost':
+                        importance = model.feature_importances_
+                    elif model_type in ['randomforest', 'logistic']:
+                        importance = model.feature_importances_ if hasattr(model, 'feature_importances_') else np.abs(model.coef_[0])
+                    elif model_type == 'knn':
+                        # KNN doesn't have feature importance, skip or use dummy values
+                        print("KNN doesn't have feature importance - skipping visualization")
+                        return None
+                    else:
+                        continue
+                    
+                    all_importances.append(importance)
+                
+                if all_importances:
+                    # Average across folds
+                    avg_importance = np.mean(all_importances, axis=0)
+                    
                     feature_imp = pd.DataFrame({
                         'feature': feature_names,
-                        'importance': importance
+                        'importance': avg_importance
                     }).sort_values('importance', ascending=False)
                     
-                    plt.figure(figsize=(10, 8))
-                    plt.barh(range(min(20, len(feature_imp))), 
-                           feature_imp.head(20)['importance'], 
+                    plt.figure(figsize=(12, 8))
+                    top_features = min(25, len(feature_imp))
+                    plt.barh(range(top_features), 
+                           feature_imp.head(top_features)['importance'], 
                            color='steelblue', alpha=0.7)
-                    plt.yticks(range(min(20, len(feature_imp))), 
-                              feature_imp.head(20)['feature'])
+                    plt.yticks(range(top_features), 
+                              feature_imp.head(top_features)['feature'])
                     plt.xlabel('Feature Importance')
-                    plt.title('Top 20 Most Important Features')
+                    plt.title(f'Top {top_features} Most Important Features ({model_type.upper()})')
                     plt.tight_layout()
                     plt.savefig('feature_importance.png', dpi=300, bbox_inches='tight')
                     plt.show()
@@ -512,7 +913,16 @@ class FraudDataVisualizer:
         mcc_fraud, business_fraud = self.merchant_analysis()
         
         print("Running business impact analysis...")
-        total_fraud_losses, merchant_losses = self.business_impact_analysis()
+        total_fraud_losses, merchant_losses = self.business_impact_analysis(model_file)
+        
+        print("Running network analysis...")
+        network_results = self.network_analysis()
+        
+        print("Running temporal deep dive...")
+        temporal_results = self.temporal_deep_dive()
+        
+        print("Running behavioral analysis...")
+        behavioral_results = self.behavioral_analysis()
         
         if model_file:
             print("Analyzing feature importance...")
@@ -526,7 +936,10 @@ class FraudDataVisualizer:
             'geographic': distance_fraud,
             'velocity': (velocity_fraud, quick_repeat_analysis),
             'merchants': (mcc_fraud, business_fraud),
-            'business_impact': (total_fraud_losses, merchant_losses)
+            'business_impact': (total_fraud_losses, merchant_losses),
+            'network': network_results,
+            'temporal_deep': temporal_results,
+            'behavioral': behavioral_results
         }
 
 def run_visualization(model_file=None):

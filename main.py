@@ -10,7 +10,11 @@ def main():
         print("python main.py features                    # Create features")
         print("python main.py lightgbm [train] [test]    # Train LightGBM")
         print("python main.py xgboost [train] [test]     # Train XGBoost")
+        print("python main.py catboost [train] [test]    # Train CatBoost")
         print("python main.py randomforest [train] [test]# Train RandomForest")
+        print("python main.py logistic [train] [test]    # Train Logistic Regression")
+        print("python main.py knn [train] [test]         # Train K-Nearest Neighbors")
+        print("python main.py visualize [model_file]     # Generate visualizations")
         print("python main.py visualize [model_file]     # Generate visualizations")
         return
     
@@ -23,7 +27,7 @@ def main():
         train_file, test_file = engine.create_features()
         print(f"Features created: {train_file}, {test_file}")
         
-    elif command in ['lightgbm', 'xgboost', 'randomforest']:
+    elif command in ['lightgbm', 'xgboost', 'catboost', 'randomforest', 'logistic', 'knn']:
         if len(sys.argv) != 4:
             print(f"Usage: python main.py {command} <train_file> <test_file>")
             return

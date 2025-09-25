@@ -194,7 +194,7 @@ class CleanFeatureEngine:
         return train_processed, test_processed
     
     def create_features(self):
-        print("Creating clean features...")
+        print("Creating features...")
         
         train_basic = self.add_basic_features(self.train_tx)
         test_basic = self.add_basic_features(self.test_tx)

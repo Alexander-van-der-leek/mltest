@@ -134,7 +134,7 @@ class CleanModel:
                 'var_smoothing': 1e-9  # Gaussian Naive Bayes smoothing parameter
             }
     
-    def train(self, n_splits=5):
+    def train(self, n_splits=10):
         X = self.train_data[self.feature_cols]
         y = self.train_data['TX_FRAUD']
         

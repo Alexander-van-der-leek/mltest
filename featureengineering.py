@@ -106,11 +106,14 @@ class CleanFeatureEngine:
         combined = pd.concat([train_df, test_df], ignore_index=True)
         combined = combined.sort_values('TX_TS').reset_index(drop=True)
         
-        # Initialize historical features
+        # Initialize historical features including new velocity count features
         hist_features = [
             'customer_tx_count_hist', 'customer_fraud_count_hist', 'customer_fraud_rate_hist',
             'customer_avg_amount_hist', 'terminal_tx_count_hist', 'terminal_fraud_count_hist',
-            'terminal_fraud_rate_hist', 'prev_tx_time_diff', 'customer_tx_last_hour'
+            'terminal_fraud_rate_hist', 'prev_tx_time_diff', 'customer_tx_last_hour',
+            # NEW VELOCITY COUNT FEATURES
+            'customer_tx_last_30min', 'customer_tx_last_15min', 'customer_tx_last_5min',
+            'terminal_tx_last_30min', 'terminal_tx_last_15min'
         ]
         
         for feature in hist_features:
@@ -134,7 +137,7 @@ class CleanFeatureEngine:
                 customer_hist[cust_id] = {'tx_count': 0, 'fraud_count': 0, 'amounts': [], 'timestamps': []}
             
             if term_id not in terminal_hist:
-                terminal_hist[term_id] = {'tx_count': 0, 'fraud_count': 0}
+                terminal_hist[term_id] = {'tx_count': 0, 'fraud_count': 0, 'timestamps': []}
             
             # Calculate features using current history
             cust_h = customer_hist[cust_id]
@@ -155,9 +158,17 @@ class CleanFeatureEngine:
                     time_diff = (curr_time - last_time).total_seconds()
                     combined.at[idx, 'prev_tx_time_diff'] = time_diff
                     
+                    # ENHANCED VELOCITY FEATURES - Count transactions in multiple time windows
+                    # Customer velocity counts
                     hour_ago = curr_time - timedelta(hours=1)
-                    recent = sum(1 for t in cust_h['timestamps'] if t >= hour_ago)
-                    combined.at[idx, 'customer_tx_last_hour'] = recent
+                    min_30_ago = curr_time - timedelta(minutes=30)
+                    min_15_ago = curr_time - timedelta(minutes=15)
+                    min_5_ago = curr_time - timedelta(minutes=5)
+                    
+                    combined.at[idx, 'customer_tx_last_hour'] = sum(1 for t in cust_h['timestamps'] if t >= hour_ago)
+                    combined.at[idx, 'customer_tx_last_30min'] = sum(1 for t in cust_h['timestamps'] if t >= min_30_ago)
+                    combined.at[idx, 'customer_tx_last_15min'] = sum(1 for t in cust_h['timestamps'] if t >= min_15_ago)
+                    combined.at[idx, 'customer_tx_last_5min'] = sum(1 for t in cust_h['timestamps'] if t >= min_5_ago)
             else:
                 combined.at[idx, 'customer_fraud_rate_hist'] = global_fraud_rate
                 combined.at[idx, 'customer_avg_amount_hist'] = self.global_stats['amount_mean']
@@ -168,6 +179,14 @@ class CleanFeatureEngine:
             if term_h['tx_count'] > 0:
                 fraud_rate = (term_h['fraud_count'] + smoothing * global_fraud_rate) / (term_h['tx_count'] + smoothing)
                 combined.at[idx, 'terminal_fraud_rate_hist'] = fraud_rate
+                
+                # Terminal velocity counts
+                if term_h['timestamps']:
+                    min_30_ago = curr_time - timedelta(minutes=30)
+                    min_15_ago = curr_time - timedelta(minutes=15)
+                    
+                    combined.at[idx, 'terminal_tx_last_30min'] = sum(1 for t in term_h['timestamps'] if t >= min_30_ago)
+                    combined.at[idx, 'terminal_tx_last_15min'] = sum(1 for t in term_h['timestamps'] if t >= min_15_ago)
             else:
                 combined.at[idx, 'terminal_fraud_rate_hist'] = global_fraud_rate
             
@@ -180,13 +199,34 @@ class CleanFeatureEngine:
                 
                 term_h['tx_count'] += 1
                 term_h['fraud_count'] += int(row['TX_FRAUD'])
+                term_h['timestamps'].append(curr_time)
         
-        # Derived features
-        combined['is_quick_repeat'] = (combined['prev_tx_time_diff'] < 1800).astype(int)
+        # Enhanced derived features using the new velocity counts
+        combined['is_quick_repeat'] = (combined['prev_tx_time_diff'] < 1800).astype(int)  # 30 minutes
         combined['multiple_tx_hour'] = (combined['customer_tx_last_hour'] > 0).astype(int)
         combined['high_risk_customer'] = (combined['customer_fraud_rate_hist'] > 0.05).astype(int)
         combined['high_risk_terminal'] = (combined['terminal_fraud_rate_hist'] > 0.1).astype(int)
         combined['amount_vs_hist_ratio'] = combined['TX_AMOUNT'] / (combined['customer_avg_amount_hist'] + 1)
+        
+        # NEW ENHANCED VELOCITY INDICATORS
+        # Multiple transaction count categories
+        combined['customer_burst_30min'] = (combined['customer_tx_last_30min'] >= 3).astype(int)  # 3+ in 30min
+        combined['customer_burst_15min'] = (combined['customer_tx_last_15min'] >= 2).astype(int)  # 2+ in 15min
+        combined['customer_burst_5min'] = (combined['customer_tx_last_5min'] >= 2).astype(int)   # 2+ in 5min
+        combined['customer_high_velocity'] = (combined['customer_tx_last_hour'] >= 5).astype(int) # 5+ in 1hour
+        
+        # Terminal velocity indicators
+        combined['terminal_burst_30min'] = (combined['terminal_tx_last_30min'] >= 5).astype(int)  # 5+ in 30min
+        combined['terminal_burst_15min'] = (combined['terminal_tx_last_15min'] >= 3).astype(int)  # 3+ in 15min
+        
+        # Velocity ratio features (continuous values for models to learn thresholds)
+        combined['customer_velocity_30min_ratio'] = combined['customer_tx_last_30min'] / 30.0  # transactions per minute
+        combined['customer_velocity_15min_ratio'] = combined['customer_tx_last_15min'] / 15.0
+        combined['customer_velocity_5min_ratio'] = combined['customer_tx_last_5min'] / 5.0
+        
+        # Cross-velocity features (customer + terminal patterns)
+        combined['customer_terminal_burst'] = ((combined['customer_tx_last_30min'] >= 2) & 
+                                             (combined['terminal_tx_last_30min'] >= 3)).astype(int)
         
         train_processed = combined[combined['is_train']].drop('is_train', axis=1)
         test_processed = combined[~combined['is_train']].drop(['is_train', 'TX_FRAUD'], axis=1, errors='ignore')
@@ -229,12 +269,33 @@ class CleanFeatureEngine:
         train_final = train_final.drop(columns=[col for col in drop_cols if col in train_final.columns])
         test_final = test_final.drop(columns=[col for col in drop_cols if col in test_final.columns])
         
-        train_final.to_csv('train_clean.csv', index=False)
-        test_final.to_csv('test_clean.csv', index=False)
-        
+        # Print feature summary including new velocity features
         print(f"Clean train: {train_final.shape}")
         print(f"Clean test: {test_final.shape}")
         print(f"Fraud rate: {train_final['TX_FRAUD'].mean():.4f}")
+        
+        # Show new velocity feature statistics
+        velocity_features = [
+            'customer_tx_last_30min', 'customer_tx_last_15min', 'customer_tx_last_5min',
+            'customer_burst_30min', 'customer_burst_15min', 'customer_burst_5min'
+        ]
+        
+        print("\nNew velocity feature statistics:")
+        for feature in velocity_features:
+            if feature in train_final.columns:
+                if 'burst' in feature:
+                    # Binary features - show percentage
+                    pct = train_final[feature].mean() * 100
+                    fraud_rate = train_final[train_final[feature] == 1]['TX_FRAUD'].mean()
+                    print(f"  {feature}: {pct:.2f}% of transactions, fraud rate: {fraud_rate:.3f}")
+                else:
+                    # Count features - show distribution
+                    max_count = train_final[feature].max()
+                    mean_count = train_final[feature].mean()
+                    print(f"  {feature}: max={max_count}, mean={mean_count:.2f}")
+        
+        train_final.to_csv('train_clean.csv', index=False)
+        test_final.to_csv('test_clean.csv', index=False)
         
         return 'train_clean.csv', 'test_clean.csv'
 

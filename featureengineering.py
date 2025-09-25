@@ -113,7 +113,9 @@ class CleanFeatureEngine:
             'terminal_fraud_rate_hist', 'prev_tx_time_diff', 'customer_tx_last_hour',
             # NEW VELOCITY COUNT FEATURES
             'customer_tx_last_30min', 'customer_tx_last_15min', 'customer_tx_last_5min',
-            'terminal_tx_last_30min', 'terminal_tx_last_15min'
+            'terminal_tx_last_30min', 'terminal_tx_last_15min',
+            # NEW QUICK SUCCESSION CUMULATIVE COUNT
+            'customer_quick_succession_count_hist'
         ]
         
         for feature in hist_features:
@@ -134,7 +136,13 @@ class CleanFeatureEngine:
             is_train = row['is_train']
             
             if cust_id not in customer_hist:
-                customer_hist[cust_id] = {'tx_count': 0, 'fraud_count': 0, 'amounts': [], 'timestamps': []}
+                customer_hist[cust_id] = {
+                    'tx_count': 0, 
+                    'fraud_count': 0, 
+                    'amounts': [], 
+                    'timestamps': [],
+                    'quick_succession_count': 0  # NEW: Track cumulative quick succession events
+                }
             
             if term_id not in terminal_hist:
                 terminal_hist[term_id] = {'tx_count': 0, 'fraud_count': 0, 'timestamps': []}
@@ -145,6 +153,7 @@ class CleanFeatureEngine:
             
             combined.at[idx, 'customer_tx_count_hist'] = cust_h['tx_count']
             combined.at[idx, 'customer_fraud_count_hist'] = cust_h['fraud_count']
+            combined.at[idx, 'customer_quick_succession_count_hist'] = cust_h['quick_succession_count']
             
             if cust_h['tx_count'] > 0:
                 fraud_rate = (cust_h['fraud_count'] + smoothing * global_fraud_rate) / (cust_h['tx_count'] + smoothing)
@@ -192,6 +201,13 @@ class CleanFeatureEngine:
             
             # Update histories only for training transactions
             if is_train and pd.notna(row.get('TX_FRAUD')):
+                # Check if current transaction is quick succession (< 30 minutes from previous)
+                if cust_h['timestamps']:
+                    last_time = max(cust_h['timestamps'])
+                    time_since_last = (curr_time - last_time).total_seconds()
+                    if time_since_last < 300:  # 30 minutes = 1800 seconds
+                        cust_h['quick_succession_count'] += 1
+                
                 cust_h['tx_count'] += 1
                 cust_h['fraud_count'] += int(row['TX_FRAUD'])
                 cust_h['amounts'].append(curr_amount)
@@ -202,7 +218,7 @@ class CleanFeatureEngine:
                 term_h['timestamps'].append(curr_time)
         
         # Enhanced derived features using the new velocity counts
-        combined['is_quick_repeat'] = (combined['prev_tx_time_diff'] < 1800).astype(int)  # 30 minutes
+        combined['is_quick_repeat'] = (combined['prev_tx_time_diff'] < 300).astype(int)  # 30 minutes
         combined['multiple_tx_hour'] = (combined['customer_tx_last_hour'] > 0).astype(int)
         combined['high_risk_customer'] = (combined['customer_fraud_rate_hist'] > 0.05).astype(int)
         combined['high_risk_terminal'] = (combined['terminal_fraud_rate_hist'] > 0.1).astype(int)
@@ -227,6 +243,11 @@ class CleanFeatureEngine:
         # Cross-velocity features (customer + terminal patterns)
         combined['customer_terminal_burst'] = ((combined['customer_tx_last_30min'] >= 2) & 
                                              (combined['terminal_tx_last_30min'] >= 3)).astype(int)
+        
+        # ENHANCED QUICK SUCCESSION DERIVED FEATURES
+        combined['has_quick_succession_history'] = (combined['customer_quick_succession_count_hist'] > 0).astype(int)
+        combined['high_quick_succession_customer'] = (combined['customer_quick_succession_count_hist'] >= 3).astype(int)
+        combined['quick_succession_rate'] = combined['customer_quick_succession_count_hist'] / (combined['customer_tx_count_hist'] + 1)
         
         train_processed = combined[combined['is_train']].drop('is_train', axis=1)
         test_processed = combined[~combined['is_train']].drop(['is_train', 'TX_FRAUD'], axis=1, errors='ignore')
@@ -277,17 +298,25 @@ class CleanFeatureEngine:
         # Show new velocity feature statistics
         velocity_features = [
             'customer_tx_last_30min', 'customer_tx_last_15min', 'customer_tx_last_5min',
-            'customer_burst_30min', 'customer_burst_15min', 'customer_burst_5min'
+            'customer_burst_30min', 'customer_burst_15min', 'customer_burst_5min',
+            'customer_quick_succession_count_hist', 'has_quick_succession_history', 
+            'high_quick_succession_customer'
         ]
         
         print("\nNew velocity feature statistics:")
         for feature in velocity_features:
             if feature in train_final.columns:
-                if 'burst' in feature:
+                if 'burst' in feature or 'has_quick_succession_history' in feature or 'high_quick_succession_customer' in feature:
                     # Binary features - show percentage
                     pct = train_final[feature].mean() * 100
-                    fraud_rate = train_final[train_final[feature] == 1]['TX_FRAUD'].mean()
+                    fraud_rate = train_final[train_final[feature] == 1]['TX_FRAUD'].mean() if train_final[feature].sum() > 0 else 0
                     print(f"  {feature}: {pct:.2f}% of transactions, fraud rate: {fraud_rate:.3f}")
+                elif 'quick_succession_count_hist' in feature:
+                    # Quick succession count - show distribution
+                    max_count = train_final[feature].max()
+                    mean_count = train_final[feature].mean()
+                    non_zero_pct = (train_final[feature] > 0).mean() * 100
+                    print(f"  {feature}: max={max_count}, mean={mean_count:.2f}, {non_zero_pct:.1f}% have >0")
                 else:
                     # Count features - show distribution
                     max_count = train_final[feature].max()

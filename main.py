@@ -14,11 +14,12 @@ def main():
         print("python main.py catboost [train] [test]    # Train CatBoost")
         print("python main.py randomforest [train] [test]# Train RandomForest")
         print("python main.py logistic [train] [test]    # Train Logistic Regression")
+        print("python main.py naivebayes [train] [test]  # Train Naive Bayes")
         print("python main.py knn [train] [test]         # Train K-Nearest Neighbors")
         print("python main.py ensemble [train] [test] [method] [models]  # Train Ensemble")
         print("  - method: simple, weighted, stacked (default: weighted)")
         print("  - models: comma-separated list (default: lightgbm,logistic)")
-        print("  - example: python main.py ensemble train.csv test.csv weighted lightgbm,logistic")
+        print("  - example: python main.py ensemble train.csv test.csv weighted lightgbm,naivebayes")
         print("python main.py visualize [model_file]     # Generate visualizations")
         return
     
@@ -31,7 +32,7 @@ def main():
         train_file, test_file = engine.create_features()
         print(f"Features created: {train_file}, {test_file}")
         
-    elif command in ['lightgbm', 'xgboost', 'catboost', 'randomforest', 'logistic', 'knn']:
+    elif command in ['lightgbm', 'xgboost', 'catboost', 'randomforest', 'logistic', 'naivebayes', 'knn']:
         if len(sys.argv) != 4:
             print(f"Usage: python main.py {command} <train_file> <test_file>")
             return
@@ -84,7 +85,7 @@ def main():
             return
         
         # Validate base models
-        valid_models = ['lightgbm', 'xgboost', 'catboost', 'randomforest', 'logistic', 'knn']
+        valid_models = ['lightgbm', 'xgboost', 'catboost', 'randomforest', 'logistic', 'naivebayes', 'knn']
         for model in base_models:
             if model not in valid_models:
                 print(f"Invalid model: {model}. Valid models: {valid_models}")

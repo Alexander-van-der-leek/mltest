@@ -5,6 +5,7 @@ from sklearn.metrics import roc_auc_score
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.neighbors import KNeighborsClassifier
+from sklearn.naive_bayes import GaussianNB
 from sklearn.preprocessing import StandardScaler
 from sklearn.feature_selection import SelectKBest, f_classif
 import lightgbm as lgb
@@ -127,13 +128,18 @@ class CleanModel:
                 'p': 2,
                 'n_jobs': -1
             }
+        
+        elif self.model_type == 'naivebayes':
+            return {
+                'var_smoothing': 1e-9  # Gaussian Naive Bayes smoothing parameter
+            }
     
     def train(self, n_splits=5):
         X = self.train_data[self.feature_cols]
         y = self.train_data['TX_FRAUD']
         
         # Apply preprocessing for models that need it
-        if self.model_type in ['logistic', 'knn']:
+        if self.model_type in ['logistic', 'knn', 'naivebayes']:
             print(f"Applying StandardScaler for {self.model_type}")
             self.scaler = StandardScaler()
             X_scaled = self.scaler.fit_transform(X)
@@ -218,6 +224,11 @@ class CleanModel:
                 model.fit(X_train, y_train)
                 val_pred = model.predict_proba(X_val)[:, 1]
             
+            elif self.model_type == 'naivebayes':
+                model = GaussianNB(**params)
+                model.fit(X_train, y_train)
+                val_pred = model.predict_proba(X_val)[:, 1]
+            
             elif self.model_type == 'knn':
                 # Smart sampling for KNN to manage memory
                 if len(X_train) > 100000:
@@ -294,7 +305,7 @@ class CleanModel:
             elif self.model_type == 'xgboost':
                 dtest = xgb.DMatrix(X_test)
                 fold_pred = model.predict(dtest, iteration_range=(0, model.best_iteration))
-            elif self.model_type in ['catboost', 'randomforest', 'logistic', 'knn']:
+            elif self.model_type in ['catboost', 'randomforest', 'logistic', 'naivebayes', 'knn']:
                 fold_pred = model.predict_proba(X_test)[:, 1]
             
             test_preds += fold_pred

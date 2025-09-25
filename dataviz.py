@@ -836,7 +836,7 @@ class FraudDataVisualizer:
                 with open(model_file, 'rb') as f:
                     model_data = pickle.load(f)
                 
-                # Get feature importance from models - FIXED for all model types
+                # Get feature importance from models - UPDATED for all model types including naivebayes
                 models = model_data['models']
                 feature_names = model_data['feature_cols']
                 model_type = model_data['model_type']
@@ -855,9 +855,9 @@ class FraudDataVisualizer:
                         importance = model.feature_importances_
                     elif model_type in ['randomforest', 'logistic']:
                         importance = model.feature_importances_ if hasattr(model, 'feature_importances_') else np.abs(model.coef_[0])
-                    elif model_type == 'knn':
-                        # KNN doesn't have feature importance, skip or use dummy values
-                        print("KNN doesn't have feature importance - skipping visualization")
+                    elif model_type in ['knn', 'naivebayes']:
+                        # These models don't have meaningful feature importance
+                        print(f"{model_type.upper()} doesn't have traditional feature importance - skipping visualization")
                         return None
                     else:
                         continue
@@ -876,10 +876,10 @@ class FraudDataVisualizer:
                     plt.figure(figsize=(12, 8))
                     top_features = min(25, len(feature_imp))
                     plt.barh(range(top_features), 
-                           feature_imp.head(top_features)['importance'], 
-                           color='steelblue', alpha=0.7)
+                        feature_imp.head(top_features)['importance'], 
+                        color='steelblue', alpha=0.7)
                     plt.yticks(range(top_features), 
-                              feature_imp.head(top_features)['feature'])
+                            feature_imp.head(top_features)['feature'])
                     plt.xlabel('Feature Importance')
                     plt.title(f'Top {top_features} Most Important Features ({model_type.upper()})')
                     plt.tight_layout()

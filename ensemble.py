@@ -3,6 +3,7 @@ import numpy as np
 from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import roc_auc_score
 from sklearn.linear_model import LogisticRegression
+from sklearn.naive_bayes import GaussianNB
 from sklearn.preprocessing import StandardScaler
 import lightgbm as lgb
 import pickle
@@ -14,7 +15,7 @@ class EnsembleModel:
         Ensemble model combining different approaches
         
         Args:
-            base_models: List of base models to ensemble ['lightgbm', 'logistic', 'catboost', 'randomforest']
+            base_models: List of base models to ensemble ['lightgbm', 'logistic', 'catboost', 'randomforest', 'naivebayes']
             blend_method: How to combine predictions ('simple', 'weighted', 'stacked')
         """
         self.base_models = base_models
@@ -75,6 +76,11 @@ class EnsembleModel:
                 'max_iter': 1000
             }
         
+        elif model_type == 'naivebayes':
+            return {
+                'var_smoothing': 1e-9
+            }
+        
         elif model_type == 'catboost':
             from catboost import CatBoostClassifier
             return {
@@ -126,8 +132,8 @@ class EnsembleModel:
             )
             val_pred = model.predict(X_val, num_iteration=model.best_iteration)
         
-        elif model_type == 'logistic':
-            # Scale features for logistic regression
+        elif model_type in ['logistic', 'naivebayes']:
+            # Scale features for logistic regression and naive bayes
             if self.scalers[model_type] is None:
                 self.scalers[model_type] = StandardScaler()
                 X_train_scaled = self.scalers[model_type].fit_transform(X_train)
@@ -136,7 +142,11 @@ class EnsembleModel:
             
             X_val_scaled = self.scalers[model_type].transform(X_val)
             
-            model = LogisticRegression(**params)
+            if model_type == 'logistic':
+                model = LogisticRegression(**params)
+            elif model_type == 'naivebayes':
+                model = GaussianNB(**params)
+            
             model.fit(X_train_scaled, y_train)
             val_pred = model.predict_proba(X_val_scaled)[:, 1]
         
@@ -189,7 +199,7 @@ class EnsembleModel:
                 print(f"  Training {model_type}...")
                 
                 # Reset scaler for each fold to prevent data leakage
-                if model_type == 'logistic':
+                if model_type in ['logistic', 'naivebayes']:
                     self.scalers[model_type] = None
                 
                 model, val_pred = self.train_base_model(model_type, X_train, y_train, X_val, y_val)
@@ -291,13 +301,13 @@ class EnsembleModel:
             for i, model in enumerate(self.models[model_type]):
                 if model_type == 'lightgbm':
                     fold_pred = model.predict(X_test, num_iteration=model.best_iteration)
-                elif model_type == 'logistic':
+                elif model_type in ['logistic', 'naivebayes']:
                     # Apply same scaling as training
-                    fold_scaler = self.scalers[model_type] if hasattr(self, 'scalers') and self.scalers[model_type] else StandardScaler()
-                    # For logistic regression, we need to handle scaling properly
-                    # This is a limitation - we'd need to save scalers per fold for perfect implementation
-                    X_test_scaled = StandardScaler().fit_transform(self.train_data[self.feature_cols])  # Refit on full train data
-                    scaler = StandardScaler().fit(X_test_scaled)
+                    # For ensemble, we need to handle scaling properly
+                    # This is a simplified approach - ideally we'd save scalers per fold
+                    scaler = StandardScaler()
+                    X_train_for_scaling = self.train_data[self.feature_cols]
+                    scaler.fit(X_train_for_scaling)
                     X_test_scaled = scaler.transform(X_test)
                     fold_pred = model.predict_proba(X_test_scaled)[:, 1]
                 elif model_type in ['catboost', 'randomforest']:
@@ -379,6 +389,11 @@ class EnsembleModel:
                     'feature': self.feature_cols,
                     'importance': avg_importance
                 }).sort_values('importance', ascending=False)
+            
+            elif model_type == 'naivebayes':
+                # Naive Bayes doesn't have traditional feature importance
+                # We could use feature variance or other metrics, but skip for now
+                print(f"Note: {model_type} doesn't have traditional feature importance")
         
         return importance_data
     
@@ -389,6 +404,10 @@ class EnsembleModel:
         importance_data = self.get_feature_importance()
         
         n_models = len(importance_data)
+        if n_models == 0:
+            print("No models with feature importance available")
+            return importance_data
+            
         fig, axes = plt.subplots(1, n_models, figsize=(6*n_models, 8))
         if n_models == 1:
             axes = [axes]
